@@ -84,6 +84,8 @@ export function Terminal() {
   const [input, setInput] = useState('');
   const [commandHistory, setCommandHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [suggestionIndex, setSuggestionIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const terminalRef = useRef<HTMLDivElement>(null);
 
@@ -148,7 +150,7 @@ export function Terminal() {
                   <div className="text-green-400">[{idx + 1}] {project.name}</div>
                   <div className="ml-4 text-gray-300">{project.description}</div>
                   <div className="ml-4 text-yellow-400">Tech: {project.tech}</div>
-                  <div className="ml-4 text-blue-400">→ {project.link}</div>
+                  <a href={`https://${project.link}`} target="_blank" rel="noreferrer" className="ml-4 text-blue-400 hover:underline block">→ {project.link}</a>
                 </div>
               ))}
             </div>
@@ -217,11 +219,11 @@ export function Terminal() {
               <div className="ml-2">
                 <div className="mb-2">
                   <span className="text-green-400">GitHub:</span>
-                  <span className="ml-4 text-blue-400">{portfolioData.github}</span>
+                  <a href={`https://${portfolioData.github}`} target="_blank" rel="noreferrer" className="ml-4 text-blue-400 hover:underline">{portfolioData.github}</a>
                 </div>
                 <div className="mb-2">
                   <span className="text-green-400">LinkedIn:</span>
-                  <span className="ml-4 text-blue-400">{portfolioData.linkedin}</span>
+                  <a href={`https://${portfolioData.linkedin}`} target="_blank" rel="noreferrer" className="ml-4 text-blue-400 hover:underline">{portfolioData.linkedin}</a>
                 </div>
               </div>
             </div>
@@ -250,54 +252,88 @@ export function Terminal() {
     setHistory([...history, ...newHistory]);
   };
 
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value;
+    setInput(val);
+    setHistoryIndex(-1);
+    if (val.trim()) {
+      const matches = Object.keys(commands).filter(cmd =>
+        cmd.startsWith(val.toLowerCase()) && cmd !== val.toLowerCase()
+      );
+      setSuggestions(matches);
+      setSuggestionIndex(0);
+    } else {
+      setSuggestions([]);
+    }
+  };
+
+  const acceptSuggestion = (cmd: string) => {
+    setInput(cmd);
+    setSuggestions([]);
+    inputRef.current?.focus();
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim()) return;
 
     setCommandHistory([...commandHistory, input]);
     setHistoryIndex(-1);
+    setSuggestions([]);
     processCommand(input);
     setInput('');
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'ArrowUp') {
-      e.preventDefault();
-      if (commandHistory.length > 0) {
-        const newIndex = historyIndex === -1
-          ? commandHistory.length - 1
-          : Math.max(0, historyIndex - 1);
-        setHistoryIndex(newIndex);
-        setInput(commandHistory[newIndex]);
+    if (suggestions.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setSuggestionIndex(i => (i + 1) % suggestions.length);
+        return;
       }
-    } else if (e.key === 'ArrowDown') {
-      e.preventDefault();
-      if (historyIndex !== -1) {
-        const newIndex = historyIndex + 1;
-        if (newIndex >= commandHistory.length) {
-          setHistoryIndex(-1);
-          setInput('');
-        } else {
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setSuggestionIndex(i => (i - 1 + suggestions.length) % suggestions.length);
+        return;
+      }
+      if (e.key === 'Tab' || e.key === 'ArrowRight') {
+        e.preventDefault();
+        acceptSuggestion(suggestions[suggestionIndex]);
+        return;
+      }
+      if (e.key === 'Escape') {
+        setSuggestions([]);
+        return;
+      }
+    } else {
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (commandHistory.length > 0) {
+          const newIndex = historyIndex === -1
+            ? commandHistory.length - 1
+            : Math.max(0, historyIndex - 1);
           setHistoryIndex(newIndex);
           setInput(commandHistory[newIndex]);
+          setSuggestions([]);
         }
+        return;
       }
-    } else if (e.key === 'Tab') {
-      e.preventDefault();
-      const matchingCommands = Object.keys(commands).filter(cmd =>
-        cmd.startsWith(input.toLowerCase())
-      );
-      if (matchingCommands.length === 1) {
-        setInput(matchingCommands[0]);
-      } else if (matchingCommands.length > 1) {
-        const newHistory: OutputLine[] = [
-          { type: 'command', content: `$ ${input}` },
-          {
-            type: 'output',
-            content: matchingCommands.join('  ')
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        if (historyIndex !== -1) {
+          const newIndex = historyIndex + 1;
+          if (newIndex >= commandHistory.length) {
+            setHistoryIndex(-1);
+            setInput('');
+          } else {
+            setHistoryIndex(newIndex);
+            setInput(commandHistory[newIndex]);
           }
-        ];
-        setHistory([...history, ...newHistory]);
+        }
+        return;
+      }
+      if (e.key === 'Tab') {
+        e.preventDefault();
       }
     }
   };
@@ -341,25 +377,41 @@ export function Terminal() {
         </div>
 
         {/* Terminal Input */}
-        <form onSubmit={handleSubmit} className="flex items-center gap-2 flex-shrink-0">
-          <span className="text-green-400">$</span>
-          <input
-            ref={inputRef}
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            className="flex-1 bg-transparent border-none outline-none text-gray-100 font-mono"
-            autoFocus
-            spellCheck={false}
-            autoComplete="off"
-          />
-          <span className="animate-pulse text-green-400">▊</span>
-        </form>
+        <div className="flex-shrink-0 relative">
+          {suggestions.length > 0 && (
+            <div className="absolute bottom-full left-6 mb-1 bg-gray-800 border border-gray-700 rounded overflow-hidden">
+              {suggestions.map((cmd, i) => (
+                <div
+                  key={cmd}
+                  className={`px-3 py-1 cursor-pointer flex gap-4 ${i === suggestionIndex ? 'bg-gray-700 text-green-400' : 'text-gray-300'}`}
+                  onMouseDown={(e) => { e.preventDefault(); acceptSuggestion(cmd); }}
+                >
+                  <span>{cmd}</span>
+                  <span className="text-gray-500 text-xs self-center">{commands[cmd as keyof typeof commands]}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          <form onSubmit={handleSubmit} className="flex items-center gap-2">
+            <span className="text-green-400">$</span>
+            <input
+              ref={inputRef}
+              type="text"
+              value={input}
+              onChange={handleChange}
+              onKeyDown={handleKeyDown}
+              className="flex-1 bg-transparent border-none outline-none text-gray-100 font-mono"
+              autoFocus
+              spellCheck={false}
+              autoComplete="off"
+            />
+            <span className="animate-pulse text-green-400">▊</span>
+          </form>
+        </div>
 
         {/* Hint */}
         <div className="mt-2 text-xs text-gray-600 flex-shrink-0">
-          Tip: Use ↑/↓ arrow keys for command history, Tab for autocomplete
+          Tip: ↑/↓ history · Tab to complete
         </div>
       </div>
     </div>
