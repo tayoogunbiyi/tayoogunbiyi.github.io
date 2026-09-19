@@ -1,29 +1,13 @@
-# terminal-portfolio
+# Tayo Ogunbiyi's technical blog
 
-A terminal-style portfolio website. Type commands to explore.
+Personal writing about LLM inference, systems, performance engineering, and
+software development.
 
-![demo](docs/demo.gif)
+The site is published at <https://tayoogunbiyi.github.io>.
 
-## Commands
+## Publish a post
 
-| Command | Description |
-|---|---|
-| `help` | List available commands |
-| `about` | About me |
-| `projects` | My projects |
-| `skills` | Technical skills |
-| `experience` | Work experience |
-| `education` | Education |
-| `contact` | GitHub & LinkedIn |
-| `clear` | Clear the terminal |
-
-↑/↓ arrow keys for command history · Tab for autocomplete
-
-## Dev
-
-```bash
-npm install
-npm run dev
-```
-
-Built with React, TypeScript, Tailwind CSS, Vite.
+1. Create `_posts/YYYY-MM-DD-post-slug.md`.
+2. Add Jekyll front matter with `layout`, `title`, `date`, and `categories`.
+3. Write the article in Markdown.
+4. Commit and push to `main`.

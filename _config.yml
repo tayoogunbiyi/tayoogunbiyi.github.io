@@ -1,0 +1,9 @@
+title: Tayo Ogunbiyi
+description: Notes on LLM inference, systems, and software engineering
+url: "https://tayoogunbiyi.github.io"
+
+theme: minima
+show_excerpts: true
+
+plugins:
+  - jekyll-feed
