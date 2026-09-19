@@ -8,8 +8,8 @@ I wanted to understand how to choose a GPU for serving an LLM. Given a model,
 input and output lengths, and a target number of simultaneous requests,
 how much GPU memory would I need?
 
-I tried a few tools, then got curious about the calculation underneath. A model
-name gives a rough parameter count: Qwen3-4B, for example, has about four billion
+I tried tools such as [gpu_poor](https://github.com/RahulSChand/gpu_poor), then got
+curious about the calculation underneath. A model name gives a rough parameter count: Qwen3-4B, for example, has about four billion
 parameters. Multiplying that count by the bytes used to store each parameter
 gives a starting estimate for the weights. But how much memory do the requests
 need? What changes when one request becomes eight running at once, or when the
@@ -18,7 +18,8 @@ input and output lengths get much larger?
 That became [vramfit](https://github.com/tayoogunbiyi/vramfit), a small CLI that
 estimates weight and KV cache memory from Hugging Face model metadata.
 
-Then I rented an A40 through [RunPod](https://www.runpod.io) to check the estimates.
+Then I rented an [NVIDIA A40](https://images.nvidia.com/content/Solutions/data-center/a40/nvidia-a40-datasheet.pdf)
+through [RunPod](https://www.runpod.io) to check the estimates.
 Across six workloads on two models, peak occupied KV cache was within 2.5% of
 vramfit's prediction. In a second experiment, I restricted the KV cache to see
 how vLLM behaves when it cannot hold the requested concurrency in memory.
@@ -30,21 +31,21 @@ Let's work through both parts.
 There are two components I wanted to estimate: the model's learned weights and
 the attention state retained for each request.
 
-Weights are the simpler part. Once we know the parameter count and runtime
-precision:
+Weights are straightforward once we know the parameter count and runtime
+precision.
 
 ```python
 weight_bytes = parameter_count * bytes_per_element
 ```
 
-Take Qwen3-4B. Using its rounded name as a starting point, four billion parameters
-stored in BF16 at two bytes each would occupy eight billion bytes, or about
-7.45 GiB. The checkpoint's actual parameter count gives a slightly larger
-estimate: 7.4924 GiB.
+Take Qwen3-4B. Its name suggests roughly four billion parameters. At two bytes
+each in BF16, that gives about eight billion bytes (7.45 GiB). Using the
+checkpoint's actual parameter count gives 7.4924 GiB.
 
-The model weights are shared across requests, so eight simultaneous requests
-still use one loaded model. The KV cache also needs space for the tokens retained
-by each active request.
+In the single-GPU vLLM instance tested here, requests use the same loaded model
+weights. Increasing concurrency from one to eight does not create eight copies
+of those weights. Each active request also needs KV cache space for its retained
+tokens; prefix sharing was disabled in these tests.
 
 ### The memory that grows with tokens and requests
 
@@ -52,11 +53,11 @@ During generation, attention uses keys and values from earlier tokens. The
 server retains these in the **KV cache** so it can reuse them as it generates
 the next token. Longer sequences need more stored keys and values.
 
-The server manages a shared pool of cache memory and assigns blocks to requests.
-For this estimate, each request needs enough blocks for its own input and output
-tokens: eight requests of the same length need eight times the KV memory of one.
-This assumes no reuse of cached prefixes between requests; prefix caching was
-disabled in the GPU experiments below.
+vLLM manages a [pool of KV cache blocks](https://docs.vllm.ai/en/v0.11.0/design/prefix_caching.html#data-structure)
+and assigns blocks to requests. Without prefix sharing, eight requests retaining
+the same number of tokens need eight times the KV memory of one. The estimator
+budgets the token bytes directly; vLLM's block rounding adds a small difference,
+which we will see in the results.
 
 For the full-attention decoders supported here, the calculation per token is:
 
@@ -73,7 +74,7 @@ kv_bytes_per_token = (
 Each layer stores a key and a value, each with `num_kv_heads * head_dim` elements.
 Notice that this uses the number of **KV heads**. With grouped-query attention,
 multiple query heads share a set of keys and values. Using the query-head count
-instead would overestimate the cache.
+would overestimate the cache.
 
 For Qwen3-4B in BF16, this works out to 147,456 bytes, or 144 KiB, per token. A
 request with 4,096 input tokens and a maximum of 256 generated tokens has a
@@ -91,9 +92,9 @@ Together with the weights, that is about 12.27 GiB of known memory.
 
 This budgets for all eight requests to retain their full input and maximum
 output at once. During an actual run, some requests will have just started while
-others are finishing, so instantaneous occupancy can be lower. The calculation
-uses the full lengths deliberately: average occupancy is a poor budget for a
-moment when several long requests overlap.
+others are finishing, so actual occupancy can be lower. The calculation
+uses the full lengths to budget the KV memory needed if all eight requests
+reach their configured maximum lengths together.
 
 There is also memory outside these two components: activations, CUDA context,
 workspaces and other runtime buffers. `vramfit` leaves those unmodelled and lets
@@ -101,19 +102,17 @@ you reserve a percentage of physical memory as headroom.
 
 ## Turning the arithmetic into a tool
 
-The arithmetic is short. Getting the inputs right takes more work.
-
 I wanted to provide a model ID, rather than manually look up layer counts and
 attention dimensions every time. The tool resolves a Hugging Face revision,
 reads its configuration and parameter metadata, and inspects SafeTensors headers
-when it needs more evidence.
+when it needs more info.
 
 Model-specific adapters turn that information into a common description for the
 calculation. They also decide whether the model's features are supported.
 
-I kept the initial scope to non-quantized dense text decoders with uniform full
-attention, including supported Llama, Qwen2 and Qwen3 configurations. Quantization,
-MoE, multi-GPU serving and other attention layouts are outside the current scope.
+`vramfit` supports non-quantized dense text decoders with uniform full attention,
+including supported Llama, Qwen2 and Qwen3 configurations. Quantization, MoE,
+multi-GPU serving and other attention layouts are outside the current scope.
 When the tool cannot establish a parameter count, it reports `unknown`.
 
 Here is a real estimator run for a larger model:
@@ -168,7 +167,7 @@ weights of 7.4924 and 14.9575 GiB. Both were within 0.9%, although parameter byt
 and runtime model-loading allocations are related rather than identical quantities.
 
 For KV cache, I used vLLM's occupancy metrics to infer how many cache blocks were
-in use. Each block holds 16 token positions, so the conversion is:
+in use. In these runs, each block held 16 token positions, so the conversion is:
 
 ```text
 occupied KV bytes = occupied blocks × 16 × KV bytes per token
@@ -191,8 +190,9 @@ for each model; it is not a separate measurement of total GPU memory.
 
 The short cases were consistently 2.5% above the estimate. In this benchmark,
 inputs passed through each model's chat template, adding eight tokens for Qwen
-and four for DeepSeek. vLLM then allocates cache in 16-token blocks. A nominal 512-token input plus 128-token output therefore
-requires 656 token slots after formatting and rounding, rather than 640:
+and four for DeepSeek. With the 16-token blocks used here, a nominal 512-token
+input plus 128-token output requires 656 token slots after formatting and
+rounding, rather than 640:
 
 ```text
 (656 - 640) / 640 = 2.5%
@@ -249,24 +249,15 @@ there is room to admit another request.
 Repeating the three-request case removed the sustained queueing. Increasing the
 pool to 4 GiB allowed four requests to run together.
 
-## What I learned
+## Using the estimate
 
-I started with “does this model fit?” I now want the input and output lengths,
-precision, and simultaneous request count alongside the model name.
+The estimate gives me a starting budget for a model and workload. The GPU
+experiments showed close agreement for weights and occupied KV, while the
+boundary test showed why I also need to inspect running and waiting requests.
 
-The calculation helps establish a budget. The engine measurements tell me how
-that budget behaves under load. I want to distinguish cache reserved by the
-server from cache occupied by requests, and I want to see waiting requests as
-well as successful completions.
-
-The tests here cover two models on one GPU. They do not establish accuracy for
-every supported architecture, quantify all runtime overhead, or give confidence
-intervals for throughput. Quantization and multi-GPU serving remain outside the
-tool's scope.
-
-Within that scope, the simple calculation was useful: the component estimates
-were close, and the boundary experiment explained why a workload can keep
-returning answers while failing to achieve its requested concurrency.
+I'd use the calculation to narrow the GPU choices, then measure the intended
+workload on the serving engine. These tests cover two models on one A40; total
+runtime overhead and throughput need to be measured for the target configuration.
 
 The [code is on GitHub](https://github.com/tayoogunbiyi/vramfit). The
 [validation notes](https://github.com/tayoogunbiyi/vramfit/blob/main/validation/README.md)
