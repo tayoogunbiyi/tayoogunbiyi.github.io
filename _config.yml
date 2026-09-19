@@ -4,6 +4,7 @@ url: "https://tayoogunbiyi.github.io"
 
 theme: minima
 show_excerpts: true
+permalink: /:title/
 
 plugins:
   - jekyll-feed
